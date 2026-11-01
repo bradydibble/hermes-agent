@@ -5,6 +5,7 @@ busy-submit handling. Bodies are rebound onto server.py's globals at install tim
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 
 from .method_ctx import bind_module
@@ -37,13 +38,31 @@ def _session_home(session: dict) -> Path:
     return Path(session.get("profile_home") or _hermes_home)
 
 
-def _retire_turn_marker(session: dict, *keys: str) -> None:
+def _retire_turn_marker(session: dict, *keys: str, status: str | None = None) -> None:
     """Drop the crash marker right before the terminal frame (not at turn-thread end: post-turn work outlives the
     client's answer, and quitting in that window would leave a marker that re-runs a finished turn). Extra ``keys``
-    cover a session_key that compression rotated mid-turn."""
+    cover a session_key that compression rotated mid-turn.
+
+    ``status`` gates the one deliberate KEEP: a turn whose conclusion is ``interrupted`` while
+    the process's own shutdown path is stopping its turns (``turn_marker.shutdown_stop_active``)
+    is a backend stop, not a user Stop — the marker survives (with ``started_at`` refreshed to
+    the interrupt instant) so the next backend's ``session.resume`` auto-continues the turn,
+    exactly as a hard process kill already does. Every other conclusion (user interrupt, error,
+    complete) still clears the marker, and a shutdown-time finalize of a COMPLETED turn clears
+    too: only an interrupted-at-exit turn is recoverable work."""
+    from tui_gateway.turn_marker import mark_turn_interrupted_by_shutdown, shutdown_stop_active
     home = _session_home(session)
+    keep_for_shutdown = status == "interrupted" and shutdown_stop_active()
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
-        if key:
+        if not key:
+            continue
+        if keep_for_shutdown:
+            mark_turn_interrupted_by_shutdown(home, key)
+            # Bound to the logger the tui server rebinds at install time (this module's bodies
+            # run on server.py globals; a bare module-level logger here would not).
+            logging.getLogger("tui_gateway.server").info(
+                "turn marker kept for shutdown interrupt of %s: the next session.resume auto-continues this turn", key)
+        else:
             clear_turn_marker(home, key)
 
 

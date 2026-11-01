@@ -258,6 +258,12 @@ def _load_interim_assistant_messages() -> bool:
 
 
 def _shutdown_sessions() -> None:
+    # Shutdown-stop FIRST: every turn this exit interrupts finalizes as ``interrupted``, and
+    # ``_retire_turn_marker`` keeps those markers (instead of clearing them) so the next
+    # backend's session.resume auto-continues the work instead of dropping it on the floor.
+    with contextlib.suppress(Exception):
+        from tui_gateway.turn_marker import mark_shutdown_stop
+        mark_shutdown_stop()
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
     for step in (_flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):
         with contextlib.suppress(Exception):

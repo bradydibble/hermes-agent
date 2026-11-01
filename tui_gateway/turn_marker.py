@@ -121,6 +121,53 @@ def _update(home: Path | str, session_key: str, mutate, what: str) -> None:
         logger.debug("failed to %s turn marker for %s", what, session_key, exc_info=True)
 
 
+_shutdown_stop = threading.Event()
+
+
+def mark_shutdown_stop() -> None:
+    """Record that THIS process is stopping its own live turns (the atexit shutdown path).
+
+    A turn interrupted by the process's own exit handler is a backend stop, not a user Stop:
+    its durable marker must SURVIVE the finalize so the next backend's ``session.resume``
+    auto-continues it — the same recovery a hard kill already gets. Set before the shutdown
+    path interrupts the live turns; read by the turn-finalize paths that would otherwise
+    clear the marker (``session_auto_continue._retire_turn_marker``). Never cleared in
+    production: the process is exiting when this is set. Tests reset it via
+    ``clear_shutdown_stop``.
+    """
+    _shutdown_stop.set()
+
+
+def clear_shutdown_stop() -> None:
+    """Test-only reset of ``mark_shutdown_stop`` (production never clears: exit is terminal)."""
+    _shutdown_stop.clear()
+
+
+def shutdown_stop_active() -> bool:
+    """True between ``mark_shutdown_stop`` and process exit: turn finalizes keep their markers."""
+    return _shutdown_stop.is_set()
+
+
+def mark_turn_interrupted_by_shutdown(home: Path | str, session_key: str) -> None:
+    """Refresh a kept marker's ``started_at`` to the interruption instant.
+
+    Auto-continue's freshness window reads ``started_at``; for a turn interrupted by the
+    shutdown path it must measure time-since-INTERRUPT, not the turn's full runtime — a
+    40-minute turn SIGTERMed by a backend stop would otherwise read as stale and never be
+    picked up. Best-effort like every marker write.
+    """
+    if not session_key:
+        return
+    now = time.time()
+    def _refresh(entries):
+        entry = entries.get(session_key)
+        if not isinstance(entry, dict):
+            return None
+        entry["started_at"] = now
+        return entries
+    _update(home, session_key, _refresh, "refresh for shutdown interrupt")
+
+
 def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attempts: int = 0,
                       auto_continue: bool = True, notification_category: str | None = None) -> None:
     """Persist the marker for a turn that is about to run. ``attempts`` = how many auto-continues led to

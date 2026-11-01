@@ -654,3 +654,78 @@ def test_second_backend_defers_to_a_live_marker_writer(emits, schedule_env, mark
         if child.poll() is None:
             child.kill()
         child.wait(timeout=10)
+
+
+# ── Shutdown-interrupt marker KEEP (backend restart picks turns back up) ─────────────
+
+
+def test_shutdown_interrupt_keeps_marker_for_auto_continue(marker_home):
+    """A turn interrupted by the process's OWN exit path keeps its durable marker (with
+    ``started_at`` refreshed to the interrupt instant) so the next backend's resume
+    auto-continues it — the same recovery a hard kill gets."""
+    from tui_gateway import turn_marker as tm
+
+    record_turn_start(marker_home, "session-key", "finish the deploy", attempts=0)
+    before = read_turn_marker(marker_home, "session-key")
+    session = _session()
+
+    tm.mark_shutdown_stop()
+    try:
+        server._retire_turn_marker(session, "session-key", status="interrupted")
+    finally:
+        tm.clear_shutdown_stop()
+
+    kept = read_turn_marker(marker_home, "session-key")
+    assert kept is not None, "shutdown interrupt must keep the marker for auto-continue"
+    assert kept["prompt"] == "finish the deploy"
+    assert kept["started_at"] >= before["started_at"]  # freshness = time since interrupt
+    # And the kept marker is actually picked up: the resume path schedules a continuation
+    # (writer pid is this process, so the live-writer guard does not hold it back).
+    assert server._maybe_schedule_auto_continue("sid", session, "session-key") is not None
+
+
+def test_user_interrupt_still_clears_marker(marker_home):
+    """Without the shutdown flag, an interrupted conclusion clears the marker exactly as
+    before: a user Stop is concluded work, never auto-resumed."""
+    record_turn_start(marker_home, "session-key", "finish the deploy")
+    server._retire_turn_marker(_session(), "session-key", status="interrupted")
+    assert read_turn_marker(marker_home, "session-key") is None
+
+
+def test_shutdown_finalize_of_completed_turn_clears_marker(marker_home):
+    """The KEEP is gated on status == interrupted: a turn that COMPLETED while the process
+    was exiting still clears its marker (auto-continuing finished work would replay it)."""
+    from tui_gateway import turn_marker as tm
+
+    record_turn_start(marker_home, "session-key", "finish the deploy")
+    tm.mark_shutdown_stop()
+    try:
+        server._retire_turn_marker(_session(), "session-key", status="complete")
+    finally:
+        tm.clear_shutdown_stop()
+    assert read_turn_marker(marker_home, "session-key") is None
+
+
+def test_shutdown_refresh_revives_a_long_running_turn(marker_home):
+    """A 40-minute turn SIGTERMed by a backend stop would read as stale (the freshness
+    window is 15 minutes of ``started_at``); the shutdown keep refreshes ``started_at`` so
+    the resume schedules instead of discarding."""
+    import json as _json
+    from tui_gateway import turn_marker as tm
+
+    record_turn_start(marker_home, "session-key", "long turn")
+    path = marker_home / "desktop" / "interrupted_turns.json"
+    entries = _json.loads(path.read_text())
+    entries["session-key"]["started_at"] = time.time() - 40 * 60
+    path.write_text(_json.dumps(entries))
+
+    tm.mark_shutdown_stop()
+    try:
+        server._retire_turn_marker(_session(), "session-key", status="interrupted")
+    finally:
+        tm.clear_shutdown_stop()
+
+    kept = read_turn_marker(marker_home, "session-key")
+    assert kept is not None
+    assert time.time() - kept["started_at"] < 60  # refreshed to now, not the turn's start
+    assert server._maybe_schedule_auto_continue("sid", _session(), "session-key") is not None

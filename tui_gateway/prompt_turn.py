@@ -985,7 +985,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
             **({"error": str(error_value or raw)} if status == "error" else {})})
         st.receipt_committed = True
     if st.receipt_committed:
-        _retire_turn_marker(session, st.marker_key)
+        _retire_turn_marker(session, st.marker_key, status=status)
     return payload, raw, status
 
 
@@ -1219,7 +1219,10 @@ def _run_prompt_submit(
                     st.error_detail)
                 # Backstop for turns that never reached a terminal frame.
                 if st.receipt_committed:
-                    _retire_turn_marker(session, st.marker_key)
+                    # status gates the shutdown-interrupt KEEP in _retire_turn_marker: an
+                    # interrupted-at-exit turn leaves its marker for the next resume's
+                    # auto-continue; every other conclusion clears it as before.
+                    _retire_turn_marker(session, st.marker_key, status=status)
                     with session["history_lock"]:
                         if session.get("_active_turn_marker_key") == st.marker_key:
                             session.pop("_active_turn_marker_key", None)
