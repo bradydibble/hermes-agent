@@ -3744,7 +3744,7 @@ class GatewayRunner(
     # Reasons set by _stop_impl() on force-interrupt; "restart_interrupted" by recover_interrupted_turns()
     # for a crash-left turn marker (no .clean_shutdown marker). All mean "killed mid-turn" -> startup
     # auto-resume.
-    _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted"})
+    _AUTO_RESUME_REASONS = frozenset({"restart_timeout", "shutdown_timeout", "restart_interrupted", "stalled_turn"})
 
     _MAX_SUPERVISED_RESTARTS = 5
     # Ran this long before crashing = HEALTHY (isolated crash, not a crash-loop); restart counter resets.
@@ -4348,6 +4348,71 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
         logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
 
 
+def _housekeeping_stalled_turn_sweep(runner, loop) -> None:
+    """In-run recovery for turns that died while the gateway stayed up (e.g. a turn process group
+    SIGTERM'd by a backend restart): startup recovery only sees crash-left markers, so an orphaned
+    active-turn marker on a LIVE gateway was never acted on and the session sat silent forever.
+    Every tick: a marked turn with no running agent, older than the stall grace, is re-armed as
+    ``resume_pending`` and auto-resumed through the normal startup-resume path (owner authorization
+    and duplicate-agent checks included). Rate-limited per session to avoid resume loops."""
+    if runner is None or loop is None or loop.is_closed():
+        return
+    import time as _time
+    grace = _float_env("HERMES_STALLED_TURN_GRACE", 900)
+    if grace <= 0:
+        return
+    now = _time.time()
+    store = getattr(runner, "session_store", None)
+    if store is None:
+        return
+    try:
+        with store._lock:
+            store._ensure_loaded_locked()
+            stalled = [
+                (e.session_key, e.session_id, e.active_turn_token, e.active_turn_started_at)
+                for e in store._entries.values()
+                if e.active_turn_token and e.active_turn_started_at and not e.suspended
+                and now - e.active_turn_started_at.timestamp() > grace
+            ]
+    except Exception as exc:
+        logger.debug("Stalled-turn sweep enumeration failed: %s", exc)
+        return
+    history = getattr(runner, "_stalled_turn_resumes", None)
+    if history is None:
+        history = runner._stalled_turn_resumes = {}
+    resumed = 0
+    for key, sid, token, started_at in stalled:
+        if not runner._is_session_running(key):
+            pass  # truly dead: eligible
+        else:
+            continue
+        recent = [t for t in history.get(sid, []) if now - t < 3600]
+        if len(recent) >= 2:
+            continue
+        try:
+            if not store.clear_turn_active(key, token):
+                continue
+            store.mark_resume_pending(key, reason="stalled_turn")
+        except Exception as exc:
+            logger.warning("Stalled-turn sweep failed to re-arm %s: %s", sid, exc)
+            continue
+        history[sid] = recent + [now]
+        resumed += 1
+        logger.warning("Stalled turn detected on %s (marker age %.0fs); scheduling auto-resume", sid, now - started_at.timestamp())
+    if resumed:
+        try:
+            asyncio.run_coroutine_threadsafe(_schedule_resumes_on_loop(runner), loop)
+        except Exception as exc:
+            logger.warning("Stalled-turn resume scheduling failed: %s", exc)
+
+
+async def _schedule_resumes_on_loop(runner):
+    try:
+        runner._schedule_resume_pending_sessions()
+    except Exception as exc:
+        logger.warning("Stalled-turn _schedule_resume_pending_sessions failed: %s", exc)
+
+
 def _housekeeping_curator() -> None:
     """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
     from agent.curator import maybe_run_curator
@@ -4510,6 +4575,10 @@ def _start_gateway_housekeeping(
         # The ticker's own guards keep its loop alive; this is the outer layer for a thread that has
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
+    if runner is not None:
+        # In-run stalled-turn recovery: a turn whose process group died while the gateway stayed up
+        # leaves an orphan active-turn marker that startup recovery never sees. See the sweep docstring.
+        chores.append((1, "Stalled-turn sweep", lambda: _housekeeping_stalled_turn_sweep(runner, loop)))
     chores += [
         # Per served profile: each profile has its own skills tree, curator state, Nous login
         # and state.db.
