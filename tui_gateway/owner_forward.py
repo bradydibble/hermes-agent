@@ -136,22 +136,43 @@ class _Relay:
                 logger.warning("owner relay for %s ended: %s", self.key, exc, exc_info=True)
 
     async def _run(self) -> None:
-        async with connect_owner(self.home, self.endpoint) as client:
-            attached = await client.rpc("session.resume", session_id=self.key)
-            target = str(attached.get("session_id") or self.key)
-            receipt = await self._submit(client, target)
-            if receipt.get("voice_stopped") is True:
-                # TUI-26: the owner took a typed stop phrase as the end of its LOCAL voice chat and
-                # admitted nothing: there is no turn to relay.
-                self.admitted.set_result(receipt)
-                return
-            admission_id = receipt.get("admission_id")
-            if not isinstance(admission_id, str) or receipt.get("status") not in ("queued", "started", "terminal"):
-                raise OwnerUnavailable("the gateway did not admit it")
-            self.admitted.set_result(receipt)
-            logger.info("forwarded Desktop prompt for %s to the owner FIFO: admission=%s",
-                        self.key, admission_id)
-            await self._relay(client, admission_id)
+        # Transient transport failures (a keepalive drop, a gateway worker cycling) before the submit
+        # hits the socket used to surface as a hard refusal on the Desktop side: the user's message was
+        # dropped with SESSION_OWNER_BUSY. Nothing is durably committed before _submit, so reconnect
+        # and retry; _submit itself keeps its once-only semantics via the fixed submission_id.
+        from hermes_cli.gateway_client import GatewayClientError
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                async with connect_owner(self.home, self.endpoint) as client:
+                    attached = await client.rpc("session.resume", session_id=self.key)
+                    target = str(attached.get("session_id") or self.key)
+                    receipt = await self._submit(client, target)
+                    if receipt.get("voice_stopped") is True:
+                        # TUI-26: the owner took a typed stop phrase as the end of its LOCAL voice chat and
+                        # admitted nothing: there is no turn to relay.
+                        self.admitted.set_result(receipt)
+                        return
+                    admission_id = receipt.get("admission_id")
+                    if not isinstance(admission_id, str) or receipt.get("status") not in ("queued", "started", "terminal"):
+                        raise OwnerUnavailable("the gateway did not admit it")
+                    self.admitted.set_result(receipt)
+                    logger.info("forwarded Desktop prompt for %s to the owner FIFO: admission=%s",
+                                self.key, admission_id)
+                    await self._relay(client, admission_id)
+                break
+            except GatewayClientError as exc:
+                # A dropped socket before the receipt came back is transient: reconnect and retry.
+                # _submit dedupes via the fixed submission_id, so a retry cannot run a second copy.
+                # An owner ANSWER (GatewayRPCError: queue_full, refused...) is not transport noise:
+                # it re-raises immediately, keeping its own refusal semantics.
+                from hermes_cli.gateway_client import GatewayRPCError
+                if isinstance(exc, GatewayRPCError):
+                    raise
+                last_exc = exc
+                if attempt == 2:
+                    raise OwnerUnavailable(f"the gateway connection kept failing: {exc}") from exc
+                await asyncio.sleep(2 * (attempt + 1))
 
     async def _submit(self, client, target: str) -> dict:
         """``prompt.submit`` on the owner. Once the request is handed to the socket, only a received
