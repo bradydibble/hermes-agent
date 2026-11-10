@@ -770,6 +770,7 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
 
 def _interrupt_session_turn(
     sid: str, session: dict, *, request_id: str | None = None, orphan: bool = False,
+    tool_reason: str | None = None,
 ) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
     channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics.
@@ -787,7 +788,8 @@ def _interrupt_session_turn(
         # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
         # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
         if should_interrupt or session.get("_compute_host_active"):
-            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
+            control = {"tool_reason": tool_reason} if tool_reason else {}
+            _get_compute_host_supervisor().interrupt(sid, request_id=request_id, **control)
     else:
         run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:
@@ -807,14 +809,14 @@ def _interrupt_session_turn(
             with _session_profile_runtime_scope(session, hydrate_secrets=False):
                 _invoke_hook(
                     "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
-                    reason="user_stop", invalidation_reason="session_interrupt",
+                    reason=tool_reason or "user_stop", invalidation_reason=tool_reason or "session_interrupt",
                 )
         except Exception:
             logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(session.get("agent"))
+            request_hard_interrupt(session.get("agent"), tool_reason=tool_reason)
         if not run_thread_alive and not compressing:
             with session["history_lock"]:
                 if session.get("running"):

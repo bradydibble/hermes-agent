@@ -26,6 +26,16 @@ class Transport:
         return True
 
 
+def test_drain_refuses_fresh_prompts_but_keeps_control_reads_runnable(runtime, monkeypatch):
+    server, fence = runtime
+    monkeypatch.setattr(server, "_LONG_HANDLERS", {"prompt.submit"})
+    monkeypatch.setitem(server._methods, "test.retirement", lambda rid, params: server._ok(rid, {}))
+    fence.drain()
+    result = server.dispatch({"id": "fresh", "method": "prompt.submit", "params": {}})
+    assert result["error"]["code"] == 5035
+    assert "result" in server.handle_request({"id": "read", "method": "test.retirement", "params": {}})
+
+
 def test_queued_and_running_rpc_hold_admission_until_the_response(runtime, monkeypatch):
     from hermes_cli.web_server_idle_proof import idle_proof
 

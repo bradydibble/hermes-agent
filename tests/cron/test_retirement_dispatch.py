@@ -5,6 +5,21 @@ from datetime import datetime, timezone, UTC
 import threading
 
 
+def test_drain_preserves_due_occurrences_for_the_replacement_backend(tmp_path, monkeypatch):
+    from cron import jobs, scheduler
+    from hermes_cli import backend_retirement
+
+    fence = backend_retirement.RetirementFence()
+    monkeypatch.setattr(backend_retirement, "retirement", fence)
+    script = tmp_path / "job.py"
+    script.write_text("print('pending')\n")
+    job = jobs.create_job(prompt=None, schedule=datetime.now(UTC).isoformat(), script=str(script), no_agent=True)
+    before = jobs.get_job(job["id"])["next_run_at"]
+    fence.drain()
+    assert scheduler.tick(verbose=False) == 0
+    assert jobs.get_job(job["id"])["next_run_at"] == before
+
+
 def test_passed_gate_tick_and_queued_job_remain_busy_until_real_worker_exit(tmp_path, monkeypatch):
     from cron import jobs, scheduler
     from hermes_cli import backend_retirement

@@ -240,3 +240,24 @@ operations are HOME-anchored (`_get_profiles_root()` returns
 `hermes -p coder profile list` sees all profiles regardless of which one is active — intentional.
 Profile-safe coding rules are in the root `AGENTS.md`; multiplex secret-scope rules in
 `gateway/AGENTS.md`.
+
+## Standalone backend retirement
+
+An external service controller can reserve `POST /api/health/retirement` with
+`{"action":"prepare"}`. First send `{"action":"drain"}` to pause fresh prompts
+and cron ticks for 60 seconds (renew while waiting). Existing work, continuations,
+delegates and human-input replies can finish. Only an idle backend grants a process-specific token;
+admission remains fenced until cancellation, expiry, or permanent commit. Commit
+before stopping that exact process incarnation, and retain the restart request
+until its replacement proves its identity. An ExecStop hook cannot veto an
+already requested systemd stop.
+
+The standalone `serve` owner publishes its session token in the private host
+rendezvous token file. A same-user controller may send it as
+`X-Hermes-Maintenance-Token`, including on a login-gated dashboard. This grants only
+GET host identity, GET idle and POST retirement operations from loopback without
+Origin or forwarding headers. It grants no general dashboard API access. The
+retirement fence is process-wide across profiles and all admission sources.
+
+Shutdown cancellation propagates `gateway shutdown` through both in-process and
+compute-host turns. A human Stop already recorded retains its attribution.
