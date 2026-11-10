@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 from hermes_cli import web_server
 import hermes_cli.web_routers.sessions as _rt_sessions
@@ -17,8 +18,13 @@ class _FakeSessionDB:
     opened_read_only = None
     requested_fields = None
 
+    db_path = None
+
     def __init__(self, *args, **kwargs):
         type(self).opened_read_only = kwargs.get("read_only")
+        if type(self).db_path is None:
+            import tempfile
+            type(self).db_path = os.path.join(tempfile.mkdtemp(prefix="fake-hermes-home-"), "state.db")
 
     @staticmethod
     def _source_allowed(row, source=None, sources=None, exclude_sources=None):
@@ -67,9 +73,11 @@ class _FakeSessionDB:
         exclude_sources=None,
         limit=20,
         fields=None,
+        include_subagents=False,
     ):
         assert query == "20260603*"
         type(self).requested_fields = fields
+        type(self).requested_include_subagents = include_subagents
         rows = [
             {
                 "session_id": "20260603_090200_exact",
@@ -114,6 +122,7 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
     SessionDB().close()
     _FakeSessionDB.opened_read_only = None
     _FakeSessionDB.requested_fields = None
+    _FakeSessionDB.requested_include_subagents = None
     monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
 
     response = asyncio.run(_rt_sessions.search_sessions(q="20260603", limit=2))
@@ -155,6 +164,22 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
         ]
     }
     assert _FakeSessionDB.opened_read_only is True
+    # Delegate runs stay out of the search panel unless sessions.show_subagents opts in.
+    assert _FakeSessionDB.requested_include_subagents is False
+
+
+def test_desktop_session_search_honors_show_subagents(monkeypatch):
+    from hermes_cli import session_listing
+
+    _FakeSessionDB.requested_include_subagents = None
+    monkeypatch.setattr(
+        session_listing, "show_subagent_sessions", lambda _home: True
+    )
+
+    response = asyncio.run(_rt_sessions.search_sessions(q="20260603", limit=2))
+
+    assert _FakeSessionDB.requested_include_subagents is True
+    assert response["results"]
 
 
 def test_desktop_session_search_stamps_the_requested_profile(monkeypatch):

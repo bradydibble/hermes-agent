@@ -304,7 +304,12 @@ async def search_sessions(
             source_filter = source or None
             source_list = _csv(sources)
             include_sources = [source_filter] if source_filter else (source_list or None)
-            exclude_list = _csv(exclude_sources)
+            # Same subagent scope the listing route applies: delegate runs join the
+            # search only when ``sessions.show_subagents`` opts them in, so typing in
+            # the search panel does not resurface runs the sidebar hides.
+            include_subagents, exclude_list = subagent_listing_scope(
+                Path(db.db_path).parent, source=source_filter, sources=source_list or None,
+                exclude_sources=_csv(exclude_sources) or None)
             now = time.time()
 
             def get_session(sid):
@@ -421,7 +426,8 @@ async def search_sessions(
             # conversations when several hits collapse onto one root.
             matches = db.search_messages(
                 query=prefix_query, source_filter=include_sources,
-                exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
+                exclude_sources=exclude_list or None, include_subagents=include_subagents,
+                limit=max(safe_limit * 5, 50),
                 fields=("session_id", "role", "snippet", "source", "model", "session_started"))
             for m in matches:
                 if len(seen) >= safe_limit:
