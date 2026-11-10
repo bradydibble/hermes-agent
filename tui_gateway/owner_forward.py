@@ -141,7 +141,6 @@ class _Relay:
         # dropped with SESSION_OWNER_BUSY. Nothing is durably committed before _submit, so reconnect
         # and retry; _submit itself keeps its once-only semantics via the fixed submission_id.
         from hermes_cli.gateway_client import GatewayClientError
-        last_exc: Exception | None = None
         for attempt in range(3):
             try:
                 async with connect_owner(self.home, self.endpoint) as client:
@@ -169,7 +168,6 @@ class _Relay:
                 from hermes_cli.gateway_client import GatewayRPCError
                 if isinstance(exc, GatewayRPCError):
                     raise
-                last_exc = exc
                 if attempt == 2:
                     raise OwnerUnavailable(f"the gateway connection kept failing: {exc}") from exc
                 await asyncio.sleep(2 * (attempt + 1))
