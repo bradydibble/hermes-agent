@@ -8,7 +8,7 @@ from .method_ctx import bind_module
 def handle_request(req: dict) -> dict | None:
     from hermes_cli.backend_retirement import retirement
 
-    with retirement.work() as admitted:
+    with retirement.work(fresh=req.get("method") == "prompt.submit") as admitted:
         if not admitted:
             return _err(req.get("id"), 5035, "backend is retiring; reconnect to continue")
         return _handle_admitted_request(req)
@@ -69,7 +69,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         from hermes_cli.backend_retirement import retirement
 
         # Reserve BEFORE enqueueing: a queued handler has accepted work even though no worker runs yet.
-        if not retirement.acquire():
+        if not retirement.acquire(fresh=normalized[1] == "prompt.submit"):
             return _err(req.get("id"), 5035, "backend is retiring; reconnect to continue")
         try:
             ctx = contextvars.copy_context()  # the pool worker must see the bound transport

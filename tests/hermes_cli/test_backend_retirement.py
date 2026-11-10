@@ -75,3 +75,24 @@ def test_only_uncommitted_permits_expire_and_unreadable_work_never_grants(monkey
         assert not admitted
     monkeypatch.setattr(web_server_idle_proof, "idle_proof", lambda: {"idle": None})
     assert RetirementFence().prepare() == {"ok": False, "idle": None}
+
+
+def test_drain_pauses_fresh_work_but_finishes_admitted_work_and_expires(monkeypatch):
+    from hermes_cli.backend_retirement import RetirementFence
+
+    fence = RetirementFence()
+    now = [100.0]
+    monkeypatch.setattr(fence, "_now", lambda: now[0])
+    assert fence.acquire(fresh=True)
+    assert fence.drain() == {"ok": True}
+    assert fence.acquire(fresh=True) is False
+    with fence.work() as admitted:
+        assert admitted
+        assert fence.prepare()["ok"] is False
+    fence.release()
+    token = fence.prepare()["token"]
+    assert fence.cancel(token) == {"ok": True}
+    assert fence.acquire(fresh=True) is False
+    now[0] += 60
+    with fence.work(fresh=True) as admitted:
+        assert admitted

@@ -25,16 +25,17 @@ class RetirementFence:
         self._token = None
         self._committed = False
         self._expires_at = 0.0
+        self._drain_until = 0.0
         self._now = time.monotonic
 
     def _expire(self):
         if self._token is not None and not self._committed and self._now() >= self._expires_at:
             self._token = None
 
-    def acquire(self):
+    def acquire(self, *, fresh=False):
         with self._lock:
             self._expire()
-            if self._preparing or self._token is not None:
+            if self._preparing or self._token is not None or (fresh and self._now() < self._drain_until):
                 return False
             self._active += 1
             return True
@@ -48,13 +49,23 @@ class RetirementFence:
             return self._active
 
     @contextmanager
-    def work(self):
-        admitted = self.acquire()
+    def work(self, *, fresh=False):
+        admitted = self.acquire(fresh=fresh)
         try:
             yield admitted
         finally:
             if admitted:
                 self.release()
+
+    def drain(self):
+        """Renew a bounded pause on new prompts/ticks; admitted work can still finish.
+
+        Continuations, delegates and human-input answers remain runnable. If the external
+        controller disappears before commit, the pause expires instead of wedging the host.
+        """
+        with self._lock:
+            self._drain_until = self._now() + 60.0
+        return {"ok": True}
 
     def prepare(self):
         from hermes_cli.web_server_idle_proof import idle_proof

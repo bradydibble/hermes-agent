@@ -244,7 +244,9 @@ Profile-safe coding rules are in the root `AGENTS.md`; multiplex secret-scope ru
 ## Standalone backend retirement
 
 An external service controller can reserve `POST /api/health/retirement` with
-`{"action":"prepare"}`. Only an idle backend grants a process-specific token;
+`{"action":"prepare"}`. First send `{"action":"drain"}` to pause fresh prompts
+and cron ticks for 60 seconds (renew while waiting). Existing work, continuations,
+delegates and human-input replies can finish. Only an idle backend grants a process-specific token;
 admission remains fenced until cancellation, expiry, or permanent commit. Commit
 before stopping that exact process incarnation, and retain the restart request
 until its replacement proves its identity. An ExecStop hook cannot veto an

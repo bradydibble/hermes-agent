@@ -20,6 +20,7 @@ def test_local_operator_can_reserve_and_cancel_retirement_behind_login_gate(main
     client = TestClient(web.app, client=("127.0.0.1", 4000))
     assert client.get("/api/host/identity", headers=headers).json()["role"] == "serve"
     assert client.get("/api/health/idle", headers=headers).json()["idle"] is True
+    assert client.post("/api/health/retirement", headers=headers, json={"action": "drain"}).json() == {"ok": True}
     permit = client.post("/api/health/retirement", headers=headers, json={"action": "prepare"}).json()
     assert permit["ok"] is True
     assert client.post("/api/health/retirement", headers=headers,
