@@ -339,7 +339,8 @@ def _require_token(request: Request) -> None:
     Hosted plugins receive this guard's decision via private IPC and request-local
     state, not via a forwarded gateway credential or a process-wide bypass.
     """
-    if (getattr(request.state, "native_http_principal", None)
+    if (getattr(request.state, "host_maintenance_authenticated", False)
+            or getattr(request.state, "native_http_principal", None)
             or getattr(request.state, "hosted_http_authenticated", None) is True):
         return
     if getattr(request.app.state, "auth_required", False):
@@ -485,7 +486,11 @@ async def _token_auth_seam(request: Request, call_next):
     routes pass through untouched.
     """
     from hermes_cli.dashboard_auth.native_http import authenticate_native_http, native_profile_scope
+    from hermes_cli.dashboard_auth.host_maintenance import authenticate_host_maintenance
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
+    rejection = authenticate_host_maintenance(request)
+    if rejection is not None:
+        return rejection
     rejection = await authenticate_native_http(request)
     if rejection is not None:
         return rejection
