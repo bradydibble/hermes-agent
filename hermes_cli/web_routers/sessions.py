@@ -307,8 +307,11 @@ async def search_sessions(
             # Same subagent scope the listing route applies: delegate runs join the
             # search only when ``sessions.show_subagents`` opts them in, so typing in
             # the search panel does not resurface runs the sidebar hides.
+            from hermes_cli.config import get_hermes_home
+            scope_home = (Path(db.db_path).parent if getattr(db, "db_path", None)
+                          else get_hermes_home())
             include_subagents, exclude_list = subagent_listing_scope(
-                Path(db.db_path).parent, source=source_filter, sources=source_list or None,
+                scope_home, source=source_filter, sources=source_list or None,
                 exclude_sources=_csv(exclude_sources) or None)
             now = time.time()
 
