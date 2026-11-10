@@ -175,6 +175,7 @@ def test_desktop_session_search_honors_show_subagents(monkeypatch):
     # An owner must initialize the store before the read-only route serves it.
     SessionDB().close()
     _FakeSessionDB.requested_include_subagents = None
+    monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
     monkeypatch.setattr(
         session_listing, "show_subagent_sessions", lambda _home: True
     )
