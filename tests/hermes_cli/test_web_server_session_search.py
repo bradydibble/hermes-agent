@@ -169,8 +169,11 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
 
 
 def test_desktop_session_search_honors_show_subagents(monkeypatch):
+    from hermes_state import SessionDB
     from hermes_cli import session_listing
 
+    # An owner must initialize the store before the read-only route serves it.
+    SessionDB().close()
     _FakeSessionDB.requested_include_subagents = None
     monkeypatch.setattr(
         session_listing, "show_subagent_sessions", lambda _home: True
@@ -254,7 +257,7 @@ class _DeepLineageSessionDB(_FakeSessionDB):
         return []  # pragma: no cover - content-hit path only in this test
 
     def search_messages(self, query, source_filter=None, exclude_sources=None,
-                        limit=20, fields=None):
+                        limit=20, fields=None, include_subagents=False):
         return [{
             "session_id": self.MID,
             "snippet": "content hit inside a deep lineage",
